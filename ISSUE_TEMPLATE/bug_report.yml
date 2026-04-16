@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a bug or unexpected behavior in Brink
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the sections below to help us triage and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+      placeholder: When I call the adapter with..., it returns... but I expected...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Configure brink with '...'
+        2. Call '...'
+        3. Observe '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error messages, stack traces, or logs if available.
+    validations:
+      required: true
+
+  - type: input
+    id: env-os
+    attributes:
+      label: Operating system
+      description: e.g. macOS 14.5, Ubuntu 22.04, Windows 11
+      placeholder: macOS 14.5
+    validations:
+      required: true
+
+  - type: input
+    id: env-python
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+      placeholder: Python 3.11.7
+    validations:
+      required: false
+
+  - type: input
+    id: env-brink-python
+    attributes:
+      label: brink-python version
+      description: Version of the Python data plane library
+      placeholder: 0.1.0
+    validations:
+      required: false
+
+  - type: input
+    id: env-brink-control-plane
+    attributes:
+      label: Brink control plane version
+      description: Version / image tag of the Go control plane
+      placeholder: 0.1.0
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help us understand the problem (configuration snippets, screenshots, related issues, etc.).
+    validations:
+      required: false
