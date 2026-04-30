@@ -1,0 +1,168 @@
+# Brink org-wide reusable release workflow.
+#
+# Builds, pushes, signs, and attests a single Docker image. Called per-repo
+# from `<repo>/.github/workflows/release.yml` on tag push. The reusable
+# location is canonical per [[Architecture Overview — What We Are Building
+# v1]] §Repository structure (getbrink/.github reusable workflows) and
+# [[D-Phase4-Cosign-From-V0.1 v1]] §3.
+#
+# Steps performed for every release:
+#
+#   1. Build + push the image to ghcr.io/getbrink/<image_name>:<version>
+#      and ...:latest, with Docker BuildKit's `provenance=mode=max` for a
+#      detailed in-toto provenance statement attached to the manifest.
+#
+#   2. Generate an SPDX 2.3 SBOM via Anchore Syft and attach it to the
+#      pushed image digest as a Cosign attestation (--type spdx).
+#
+#   3. Cosign keyless-sign the image digest via GitHub Actions OIDC.
+#      Signature event lands in the Sigstore Rekor public transparency
+#      log automatically (default --tlog-upload).
+#
+#   4. Generate a SLSA Build Level 2 provenance attestation via
+#      actions/attest-build-provenance@v2 (added 2026-04-16 banner per
+#      [[Part B — Running Plan v1]] §14).
+#
+# Failure mode: fail-fast (per D-note §3 line 86). No partially-released
+# version where some tags are signed and others are not.
+#
+# Security note: all workflow inputs are typed via `workflow_call` and
+# never sourced from `github.event.*` user-controlled fields. Inputs
+# that flow into shell `run:` blocks go through `env:` vars per the
+# GHA injection-prevention guidance.
+
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: "Image name under ghcr.io/getbrink/ (e.g. eval-prometheus2)."
+        required: true
+        type: string
+      dockerfile:
+        description: "Path to Dockerfile, relative to the calling repo's root (e.g. docker/eval-prometheus2.Dockerfile)."
+        required: true
+        type: string
+      version:
+        description: "Image tag (typically github.ref_name; e.g. v0.1.0)."
+        required: true
+        type: string
+      context:
+        description: "Build context path (default '.'; pass '..' for monorepo-parent context like brink-eval)."
+        required: false
+        type: string
+        default: "."
+      platforms:
+        description: "Comma-separated docker buildx platforms (default linux/amd64)."
+        required: false
+        type: string
+        default: "linux/amd64"
+      maximize_build_space:
+        description: "Run jlumbroso/free-disk-space@main before build (recommended for images >10 GB to free ~25 GB of preinstalled tools)."
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      image_digest:
+        description: "Digest of the built+pushed image (sha256:...)."
+        value: ${{ jobs.release.outputs.image_digest }}
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write       # cosign keyless OIDC + actions/attest-build-provenance
+  attestations: write   # actions/attest-build-provenance
+
+jobs:
+  release:
+    name: Build, push, sign, attest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Free up disk space (large-image builds only)
+        if: ${{ inputs.maximize_build_space }}
+        # Frees ~25 GB by removing preinstalled Android SDK / .NET / Haskell
+        # / large language toolchains we don't need. Required for
+        # eval-prometheus2's ~22 GB final image which peaks ~38 GB during
+        # the BF16+F16+Q8_0 multi-stage build.
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: |
+            ghcr.io/getbrink/${{ inputs.image_name }}:${{ inputs.version }}
+            ghcr.io/getbrink/${{ inputs.image_name }}:latest
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ inputs.image_name }}
+          cache-to: type=gha,scope=${{ inputs.image_name }},mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Cosign sign image (keyless OIDC)
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/getbrink/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: true
+
+      - name: Attach SBOM attestation
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign attest --yes \
+              --predicate sbom.spdx.json \
+              --type spdx \
+              "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Generate build-provenance attestation
+        # SLSA Build Level 2 provenance per
+        # [[D-Phase4-Cosign-From-V0.1 v1]] §3 + 2026-04-16 banner.
+        # Auto-attaches the attestation to the image manifest at
+        # ghcr.io/getbrink/<image_name>@<digest>.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/getbrink/${{ inputs.image_name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
