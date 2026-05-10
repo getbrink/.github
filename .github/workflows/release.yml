@@ -191,7 +191,7 @@ jobs:
           cache-to: type=gha,scope=${{ inputs.image_name }},mode=max
 
       - name: Trivy scan (blocks on ${{ inputs.trivy_severity }})
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "ghcr.io/getbrink/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}"
           severity: ${{ inputs.trivy_severity }}
