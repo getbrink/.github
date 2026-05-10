@@ -2,9 +2,7 @@
 #
 # Builds, pushes, scans, signs, attests, and publishes release notes for a
 # single Docker image. Called per-repo from `<repo>/.github/workflows/release.yml`
-# on tag push. The reusable location is canonical per [[Architecture Overview
-# — What We Are Building v1]] §Repository structure and [[D-Phase4-Cosign-From-V0.1
-# v1]] §3 (P6.5 ship).
+# on tag push.
 #
 # Steps performed for every release:
 #
@@ -98,16 +96,24 @@ on:
         type: string
         default: ""
       trivy_severity:
-        description: "Comma-separated Trivy severities that block the workflow. CRITICAL by default per pack [[P6.5]] §3 commitment 8."
+        description: "Comma-separated Trivy severities that block the workflow. CRITICAL by default."
         required: false
         type: string
         default: "CRITICAL"
+      grafana_signing_required:
+        description: "Set true to require the GRAFANA_ACCESS_POLICY_TOKEN secret and pass it through as a docker build-arg. Only the Grafana dashboard image needs this; default false."
+        required: false
+        type: boolean
+        default: false
     secrets:
       BRINK_CI_CROSS_REPO_READ_APP_ID:
         description: "GitHub App ID for brink-ci-cross-repo-read App (required only when sibling_repo is set)."
         required: false
       BRINK_CI_CROSS_REPO_READ_PRIVATE_KEY:
         description: "GitHub App private key for brink-ci-cross-repo-read App (required only when sibling_repo is set)."
+        required: false
+      GRAFANA_ACCESS_POLICY_TOKEN:
+        description: "Grafana plugin signing token (required only when grafana_signing_required is true)."
         required: false
     outputs:
       image_digest:
@@ -189,6 +195,8 @@ jobs:
           provenance: mode=max
           cache-from: type=gha,scope=${{ inputs.image_name }}
           cache-to: type=gha,scope=${{ inputs.image_name }},mode=max
+          build-args: |
+            ${{ inputs.grafana_signing_required && format('GRAFANA_ACCESS_POLICY_TOKEN={0}', secrets.GRAFANA_ACCESS_POLICY_TOKEN) || '' }}
 
       - name: Trivy scan (blocks on ${{ inputs.trivy_severity }})
         uses: aquasecurity/trivy-action@v0.36.0
@@ -196,6 +204,19 @@ jobs:
           image-ref: "ghcr.io/getbrink/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}"
           severity: ${{ inputs.trivy_severity }}
           exit-code: "1"
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy scan HIGH (non-blocking; emits to GHA log)
+        # Non-blocking HIGH scan complements the CRITICAL block above.
+        # Release-time MAJOR/HIGH remediation tracking lives in
+        # brink-docs/operations/supply-chain.md.
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "ghcr.io/getbrink/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}"
+          severity: "HIGH"
+          exit-code: "0"
           ignore-unfixed: true
           format: table
 

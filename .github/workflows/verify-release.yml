@@ -1,13 +1,20 @@
-# Post-release verification smoke (P6.5 T12).
+# Post-release verification smoke.
 #
-# Triggers AFTER a release is published in any of the three MVP image
-# repos. Runs `cosign verify` against the published image using the same
-# tightened certificate-identity regexp that supply-chain.md instructs
-# customers to use. Catches silent regressions where the signature
-# format changes but the verify command in docs is stale.
+# Triggers AFTER a release is published in any of the MVP image repos.
+# Runs the four-flag cosign verify discipline + SBOM + SLSA attestation
+# verification against the published image. Catches silent regressions
+# where the signature format changes but the verify command in docs is
+# stale.
 #
-# Manual `workflow_dispatch` entry point for the MVP. The cross-repo
-# release-event router lands at v0.2.
+# Manual `workflow_dispatch` entry point. The cross-repo release-event
+# router lands at v0.2.
+#
+# Auth note: GHCR packages for private getbrink repos are themselves
+# private; cosign verify cannot fetch the .sig manifest without a
+# registry-scoped token. This workflow logs into ghcr.io with the
+# in-workflow GITHUB_TOKEN before invoking cosign — works for any
+# package whose source repo grants packages:read to the actor running
+# this workflow.
 
 name: verify-release
 
@@ -16,6 +23,14 @@ on:
     inputs:
       image:
         description: "Full image reference, e.g. ghcr.io/getbrink/brink-control-plane:v0.1.0"
+        required: true
+        type: string
+      caller_repository:
+        description: "Caller repo whose tag invoked the release, e.g. getbrink/brink"
+        required: true
+        type: string
+      caller_ref:
+        description: "Caller ref, e.g. refs/tags/v0.1.0"
         required: true
         type: string
 
@@ -28,34 +43,53 @@ jobs:
       packages: read
       id-token: write
     steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.2
 
       - name: Cosign verify (image signature)
         env:
           IMAGE: ${{ inputs.image }}
+          CALLER_REPO: ${{ inputs.caller_repository }}
+          CALLER_REF: ${{ inputs.caller_ref }}
         run: |
           cosign verify \
             --certificate-identity='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository="${CALLER_REPO}" \
+            --certificate-github-workflow-ref="${CALLER_REF}" \
             "${IMAGE}"
 
       - name: Cosign verify-attestation (SBOM, SPDX 2.3)
         env:
           IMAGE: ${{ inputs.image }}
+          CALLER_REPO: ${{ inputs.caller_repository }}
+          CALLER_REF: ${{ inputs.caller_ref }}
         run: |
           cosign verify-attestation \
             --type spdxjson \
             --certificate-identity='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository="${CALLER_REPO}" \
+            --certificate-github-workflow-ref="${CALLER_REF}" \
             "${IMAGE}"
 
       - name: Cosign verify-attestation (SLSA v1.0 provenance)
         env:
           IMAGE: ${{ inputs.image }}
+          CALLER_REPO: ${{ inputs.caller_repository }}
+          CALLER_REF: ${{ inputs.caller_ref }}
         run: |
           cosign verify-attestation \
             --type slsaprovenance1 \
             --certificate-identity='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository="${CALLER_REPO}" \
+            --certificate-github-workflow-ref="${CALLER_REF}" \
             "${IMAGE}"
