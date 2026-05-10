@@ -1,0 +1,58 @@
+# Post-release verification smoke (P6.5 T12).
+#
+# Triggers AFTER a release is published in any of the three MVP image
+# repos. Runs `cosign verify` against the published image using the same
+# tightened certificate-identity regexp that supply-chain.md instructs
+# customers to use. Catches silent regressions where the signature
+# format changes but the verify command in docs is stale.
+#
+# Manual `workflow_dispatch` entry point for the MVP. The cross-repo
+# release-event router lands at v0.2.
+
+name: verify-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Full image reference, e.g. ghcr.io/getbrink/brink-control-plane:v0.1.0"
+        required: true
+        type: string
+
+jobs:
+  verify:
+    name: Cosign verify + SBOM verify + provenance verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Cosign verify (image signature)
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            "${IMAGE}"
+
+      - name: Cosign verify-attestation (SBOM, SPDX 2.3)
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          cosign verify-attestation \
+            --type spdx \
+            --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            "${IMAGE}"
+
+      - name: GitHub attestation verify (SLSA Build Level 2 provenance)
+        env:
+          IMAGE: ${{ inputs.image }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh attestation verify --owner getbrink "oci://${IMAGE}"

@@ -1,30 +1,49 @@
 # Brink org-wide reusable release workflow.
 #
-# Builds, pushes, signs, and attests a single Docker image. Called per-repo
-# from `<repo>/.github/workflows/release.yml` on tag push. The reusable
-# location is canonical per [[Architecture Overview — What We Are Building
-# v1]] §Repository structure (getbrink/.github reusable workflows) and
-# [[D-Phase4-Cosign-From-V0.1 v1]] §3.
+# Builds, pushes, scans, signs, attests, and publishes release notes for a
+# single Docker image. Called per-repo from `<repo>/.github/workflows/release.yml`
+# on tag push. The reusable location is canonical per [[Architecture Overview
+# — What We Are Building v1]] §Repository structure and [[D-Phase4-Cosign-From-V0.1
+# v1]] §3 (P6.5 ship).
 #
 # Steps performed for every release:
 #
-#   1. Build + push the image to ghcr.io/getbrink/<image_name>:<version>
+#   1. Optional sibling-repo checkout when the image's Dockerfile carries
+#      a monorepo-parent path-dep (e.g., brink-eval's docker/eval.Dockerfile
+#      consumes brink/pkg/contract/python). Sibling checkout uses the
+#      `brink-ci-cross-repo-read` GitHub App token; secrets are required
+#      only when `sibling_repo` is non-empty.
+#
+#   2. Build + push the image to ghcr.io/getbrink/<image_name>:<version>
 #      and ...:latest, with Docker BuildKit's `provenance=mode=max` for a
 #      detailed in-toto provenance statement attached to the manifest.
 #
-#   2. Generate an SPDX 2.3 SBOM via Anchore Syft and attach it to the
+#   3. Trivy scan on the just-pushed digest. CRITICAL CVEs block the
+#      workflow before signing; documented MAJOR remediations land in
+#      brink-docs/operations/supply-chain.md.
+#
+#   4. Generate an SPDX 2.3 SBOM via Anchore Syft and attach it to the
 #      pushed image digest as a Cosign attestation (--type spdx).
 #
-#   3. Cosign keyless-sign the image digest via GitHub Actions OIDC.
+#   5. Cosign keyless-sign the image digest via GitHub Actions OIDC.
 #      Signature event lands in the Sigstore Rekor public transparency
-#      log automatically (default --tlog-upload).
+#      log automatically (default --tlog-upload). Installer v4 ships
+#      Cosign v3.x which writes to Rekor v2 via TUF-distributed
+#      TrustedRoot — customer cosign-client floor is v2.6.0+ per
+#      supply-chain.md prerequisites.
 #
-#   4. Generate a SLSA Build Level 2 provenance attestation via
-#      actions/attest-build-provenance@v2 (added 2026-04-16 banner per
-#      [[Part B — Running Plan v1]] §14).
+#   6. Generate a SLSA Build Level 2 provenance attestation via
+#      actions/attest-build-provenance@v2.
 #
-# Failure mode: fail-fast (per D-note §3 line 86). No partially-released
-# version where some tags are signed and others are not.
+#   7. Publish release notes via softprops/action-gh-release@v2. Body
+#      renders from `.github/RELEASE_TEMPLATE.md` in the getbrink/.github
+#      org repo with {{ image_digests }} + {{ cosign_verify_command }}
+#      placeholders substituted at workflow time.
+#
+# Failure mode: fail-fast. No partially-released version where some tags
+# are signed and others are not. Trivy CRITICAL or sign failure leaves
+# the image pushed but unsigned; customer verify returns "no signatures
+# found" and the runbook says DO NOT INSTALL.
 #
 # Security note: all workflow inputs are typed via `workflow_call` and
 # never sourced from `github.event.*` user-controlled fields. Inputs
@@ -37,32 +56,59 @@ on:
   workflow_call:
     inputs:
       image_name:
-        description: "Image name under ghcr.io/getbrink/ (e.g. eval-prometheus2)."
+        description: "Image name under ghcr.io/getbrink/ (e.g. brink-control-plane, eval, eval-prometheus2)."
         required: true
         type: string
       dockerfile:
-        description: "Path to Dockerfile, relative to the calling repo's root (e.g. docker/eval-prometheus2.Dockerfile)."
+        description: "Path to Dockerfile, relative to the build context (e.g. Dockerfile or brink-eval/docker/eval.Dockerfile)."
         required: true
         type: string
       version:
-        description: "Image tag (typically github.ref_name; e.g. v0.1.0)."
+        description: "Image tag (typically github.ref_name; e.g. v0.1.0 or v0.0.0-rc1)."
         required: true
         type: string
       context:
-        description: "Build context path (default '.'; pass '..' for monorepo-parent context like brink-eval)."
+        description: "Build context path relative to $GITHUB_WORKSPACE (default '.'; pass '..' for monorepo-parent context)."
         required: false
         type: string
         default: "."
       platforms:
-        description: "Comma-separated docker buildx platforms (default linux/amd64)."
+        description: "Comma-separated docker buildx platforms (default linux/amd64; arm64 lands at v0.2)."
         required: false
         type: string
         default: "linux/amd64"
       maximize_build_space:
-        description: "Run jlumbroso/free-disk-space@main before build (recommended for images >10 GB to free ~25 GB of preinstalled tools)."
+        description: "Run jlumbroso/free-disk-space@main before build (required for images >10 GB to free ~25 GB of preinstalled tools)."
         required: false
         type: boolean
         default: false
+      caller_path:
+        description: "Directory under $GITHUB_WORKSPACE to check out the caller repo (default '' = workspace root). Set to e.g. 'brink-eval' when sibling checkout is needed."
+        required: false
+        type: string
+        default: ""
+      sibling_repo:
+        description: "Optional sibling repo (without 'getbrink/' prefix) to check out when the Dockerfile carries a monorepo-parent path-dep (e.g. 'brink' for brink-eval's eval.Dockerfile)."
+        required: false
+        type: string
+        default: ""
+      sibling_path:
+        description: "Destination under $GITHUB_WORKSPACE for the sibling checkout (e.g. 'brink')."
+        required: false
+        type: string
+        default: ""
+      trivy_severity:
+        description: "Comma-separated Trivy severities that block the workflow. CRITICAL by default per pack [[P6.5]] §3 commitment 8."
+        required: false
+        type: string
+        default: "CRITICAL"
+    secrets:
+      BRINK_CI_CROSS_REPO_READ_APP_ID:
+        description: "GitHub App ID for brink-ci-cross-repo-read App (required only when sibling_repo is set)."
+        required: false
+      BRINK_CI_CROSS_REPO_READ_PRIVATE_KEY:
+        description: "GitHub App private key for brink-ci-cross-repo-read App (required only when sibling_repo is set)."
+        required: false
     outputs:
       image_digest:
         description: "Digest of the built+pushed image (sha256:...)."
@@ -76,7 +122,7 @@ permissions:
 
 jobs:
   release:
-    name: Build, push, sign, attest
+    name: Build, push, scan, sign, attest, publish
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -85,10 +131,6 @@ jobs:
     steps:
       - name: Free up disk space (large-image builds only)
         if: ${{ inputs.maximize_build_space }}
-        # Frees ~25 GB by removing preinstalled Android SDK / .NET / Haskell
-        # / large language toolchains we don't need. Required for
-        # eval-prometheus2's ~22 GB final image which peaks ~38 GB during
-        # the BF16+F16+Q8_0 multi-stage build.
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
@@ -101,6 +143,27 @@ jobs:
 
       - name: Checkout caller repo
         uses: actions/checkout@v4
+        with:
+          path: ${{ inputs.caller_path }}
+
+      - name: Mint sibling-repo checkout token
+        if: ${{ inputs.sibling_repo != '' }}
+        id: sibling-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BRINK_CI_CROSS_REPO_READ_APP_ID }}
+          private-key: ${{ secrets.BRINK_CI_CROSS_REPO_READ_PRIVATE_KEY }}
+          owner: getbrink
+          repositories: ${{ inputs.sibling_repo }}
+
+      - name: Checkout sibling repo
+        if: ${{ inputs.sibling_repo != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: getbrink/${{ inputs.sibling_repo }}
+          path: ${{ inputs.sibling_path }}
+          token: ${{ steps.sibling-token.outputs.token }}
+          fetch-depth: 1
 
       - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v3
@@ -127,8 +190,17 @@ jobs:
           cache-from: type=gha,scope=${{ inputs.image_name }}
           cache-to: type=gha,scope=${{ inputs.image_name }},mode=max
 
+      - name: Trivy scan (blocks on ${{ inputs.trivy_severity }})
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: "ghcr.io/getbrink/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}"
+          severity: ${{ inputs.trivy_severity }}
+          exit-code: "1"
+          ignore-unfixed: true
+          format: table
+
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.7.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Cosign sign image (keyless OIDC)
         env:
@@ -157,12 +229,45 @@ jobs:
               "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
 
       - name: Generate build-provenance attestation
-        # SLSA Build Level 2 provenance per
-        # [[D-Phase4-Cosign-From-V0.1 v1]] §3 + 2026-04-16 banner.
-        # Auto-attaches the attestation to the image manifest at
-        # ghcr.io/getbrink/<image_name>@<digest>.
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ghcr.io/getbrink/${{ inputs.image_name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Render release notes from org template
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/getbrink/.github/main/.github/RELEASE_TEMPLATE.md > /tmp/template.md
+          python3 - <<'PYEOF' > release_notes.md
+          import os
+          template = open('/tmp/template.md').read()
+          name = os.environ['IMAGE_NAME']
+          digest = os.environ['IMAGE_DIGEST']
+          version = os.environ['VERSION']
+          digest_row = f"| `ghcr.io/getbrink/{name}` | `{digest}` |"
+          verify_cmd = (
+              "cosign verify \\\n"
+              "  --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\\.github/workflows/release\\.yml@refs/tags/v[0-9].*$' \\\n"
+              "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \\\n"
+              f"  ghcr.io/getbrink/{name}@{digest}"
+          )
+          body = (template
+              .replace('{{ image_digests }}', digest_row)
+              .replace('{{ cosign_verify_command }}', verify_cmd)
+              .replace('{{ version }}', version)
+              .replace('{{ image_name }}', name)
+          )
+          print(body)
+          PYEOF
+
+      - name: Publish release notes
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          files: sbom.spdx.json
+          append_body: true
+          fail_on_unmatched_files: false
