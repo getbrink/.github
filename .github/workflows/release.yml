@@ -258,7 +258,9 @@ jobs:
                       "workflow": {
                           "ref": os.environ["GH_REF"],
                           "repository": os.environ["GH_REPO_URL"],
-                          "path": os.environ["GH_WORKFLOW_REF"].split("@")[0].split("/", 1)[1] if "@" in os.environ["GH_WORKFLOW_REF"] else os.environ["GH_WORKFLOW_REF"],
+                          # GH_WORKFLOW_REF = "<owner>/<repo>/<workflow-path>@<ref>"
+                          # The workflow path is everything after "<owner>/<repo>/".
+                          "path": os.environ["GH_WORKFLOW_REF"].split("@")[0].split("/", 2)[2] if "@" in os.environ["GH_WORKFLOW_REF"] else os.environ["GH_WORKFLOW_REF"],
                       },
                   },
                   "internalParameters": {
@@ -295,6 +297,44 @@ jobs:
               --predicate slsa-provenance.json \
               --type slsaprovenance1 \
               "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Cosign self-verify (signature + SBOM + SLSA)
+        # I2 (Phase 6 rules): verification is BOTH a sign step AND a verify
+        # step in the SAME workflow. Catches identity/OIDC drift before the
+        # release is announced as published.
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          IMAGE_REF="ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          CERT_IDENTITY_REGEXP='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
+          OIDC_ISSUER='https://token.actions.githubusercontent.com'
+
+          echo "::group::Verify image signature"
+          cosign verify \
+            --certificate-identity-regexp="${CERT_IDENTITY_REGEXP}" \
+            --certificate-oidc-issuer="${OIDC_ISSUER}" \
+            "${IMAGE_REF}" > /dev/null
+          echo "OK: signature verified."
+          echo "::endgroup::"
+
+          echo "::group::Verify SBOM attestation (SPDX-JSON)"
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-identity-regexp="${CERT_IDENTITY_REGEXP}" \
+            --certificate-oidc-issuer="${OIDC_ISSUER}" \
+            "${IMAGE_REF}" > /dev/null
+          echo "OK: SBOM attestation verified."
+          echo "::endgroup::"
+
+          echo "::group::Verify SLSA v1.0 provenance attestation"
+          cosign verify-attestation \
+            --type slsaprovenance1 \
+            --certificate-identity-regexp="${CERT_IDENTITY_REGEXP}" \
+            --certificate-oidc-issuer="${OIDC_ISSUER}" \
+            "${IMAGE_REF}" > /dev/null
+          echo "OK: SLSA v1.0 provenance verified."
+          echo "::endgroup::"
 
       - name: Render release notes from org template
         env:
