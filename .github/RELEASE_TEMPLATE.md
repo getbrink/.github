@@ -33,8 +33,10 @@ The following checks were performed on each of these signatures:
 ```bash
 cosign verify-attestation \
   --type spdxjson \
-  --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
+  --certificate-identity='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository={{ caller_repo }} \
+  --certificate-github-workflow-ref={{ caller_ref }} \
   ghcr.io/getbrink/{{ image_name }}:{{ version }}
 ```
 
@@ -43,8 +45,10 @@ cosign verify-attestation \
 ```bash
 cosign verify-attestation \
   --type slsaprovenance1 \
-  --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
+  --certificate-identity='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository={{ caller_repo }} \
+  --certificate-github-workflow-ref={{ caller_ref }} \
   ghcr.io/getbrink/{{ image_name }}:{{ version }}
 ```
 
@@ -58,7 +62,7 @@ rekor-cli search --artifact ghcr.io/getbrink/{{ image_name }}@<digest>
 
 ## What the signature proves
 
-The signature attests that this image was built by the `getbrink/.github` reusable release workflow, invoked from a `v*.*.*` tag push on a `getbrink/*` repository, by a GitHub Actions OIDC identity that GitHub issued at build time.
+The signature attests that this image was built by the `getbrink/.github` reusable release workflow on its `main` branch, invoked from a `v*.*.*` tag push on a `getbrink/*` repository, by a GitHub Actions OIDC identity that GitHub issued at build time. The four constraints (`--certificate-identity` + `--certificate-oidc-issuer` + `--certificate-github-workflow-repository` + `--certificate-github-workflow-ref`) together pin: who signed, who invoked, from which repo, on which tag.
 
 ## What the signature does NOT prove
 

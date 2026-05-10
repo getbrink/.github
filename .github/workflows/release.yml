@@ -302,18 +302,29 @@ jobs:
         # I2 (Phase 6 rules): verification is BOTH a sign step AND a verify
         # step in the SAME workflow. Catches identity/OIDC drift before the
         # release is announced as published.
+        #
+        # Reusable-workflow OIDC: for reusable-workflow signing, the
+        # Fulcio cert SAN reflects the REUSABLE workflow's URL+ref (not
+        # the caller's). The caller's workflow + repo + ref + sha land in
+        # the cert as separate GitHub-workflow extension claims that
+        # cosign exposes via --certificate-github-workflow-*. We pin all
+        # three: signer (the reusable on main), caller repo, caller tag.
         env:
           IMAGE_NAME: ${{ inputs.image_name }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          CALLER_REPO: ${{ github.repository }}
+          CALLER_REF: ${{ github.ref }}
         run: |
           IMAGE_REF="ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
-          CERT_IDENTITY_REGEXP='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
+          SIGNER_IDENTITY='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main'
           OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
           echo "::group::Verify image signature"
           cosign verify \
-            --certificate-identity-regexp="${CERT_IDENTITY_REGEXP}" \
+            --certificate-identity="${SIGNER_IDENTITY}" \
             --certificate-oidc-issuer="${OIDC_ISSUER}" \
+            --certificate-github-workflow-repository="${CALLER_REPO}" \
+            --certificate-github-workflow-ref="${CALLER_REF}" \
             "${IMAGE_REF}" > /dev/null
           echo "OK: signature verified."
           echo "::endgroup::"
@@ -321,8 +332,10 @@ jobs:
           echo "::group::Verify SBOM attestation (SPDX-JSON)"
           cosign verify-attestation \
             --type spdxjson \
-            --certificate-identity-regexp="${CERT_IDENTITY_REGEXP}" \
+            --certificate-identity="${SIGNER_IDENTITY}" \
             --certificate-oidc-issuer="${OIDC_ISSUER}" \
+            --certificate-github-workflow-repository="${CALLER_REPO}" \
+            --certificate-github-workflow-ref="${CALLER_REF}" \
             "${IMAGE_REF}" > /dev/null
           echo "OK: SBOM attestation verified."
           echo "::endgroup::"
@@ -330,8 +343,10 @@ jobs:
           echo "::group::Verify SLSA v1.0 provenance attestation"
           cosign verify-attestation \
             --type slsaprovenance1 \
-            --certificate-identity-regexp="${CERT_IDENTITY_REGEXP}" \
+            --certificate-identity="${SIGNER_IDENTITY}" \
             --certificate-oidc-issuer="${OIDC_ISSUER}" \
+            --certificate-github-workflow-repository="${CALLER_REPO}" \
+            --certificate-github-workflow-ref="${CALLER_REF}" \
             "${IMAGE_REF}" > /dev/null
           echo "OK: SLSA v1.0 provenance verified."
           echo "::endgroup::"
@@ -349,18 +364,24 @@ jobs:
           name = os.environ['IMAGE_NAME']
           digest = os.environ['IMAGE_DIGEST']
           version = os.environ['VERSION']
+          caller_repo = os.environ['GITHUB_REPOSITORY']
+          caller_ref = os.environ['GITHUB_REF']
           digest_row = f"| `ghcr.io/getbrink/{name}` | `{digest}` |"
           verify_cmd = (
               "cosign verify \\\n"
-              "  --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\\.github/workflows/release\\.yml@refs/tags/v[0-9].*$' \\\n"
+              "  --certificate-identity='https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main' \\\n"
               "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \\\n"
-              f"  ghcr.io/getbrink/{name}@{digest}"
+              f"  --certificate-github-workflow-repository={caller_repo} \\\n"
+              f"  --certificate-github-workflow-ref={caller_ref} \\\n"
+              f"  ghcr.io/getbrink/{name}:{version}"
           )
           body = (template
               .replace('{{ image_digests }}', digest_row)
               .replace('{{ cosign_verify_command }}', verify_cmd)
               .replace('{{ version }}', version)
               .replace('{{ image_name }}', name)
+              .replace('{{ caller_repo }}', caller_repo)
+              .replace('{{ caller_ref }}', caller_ref)
           )
           print(body)
           PYEOF
