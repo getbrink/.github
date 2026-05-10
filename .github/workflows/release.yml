@@ -225,7 +225,7 @@ jobs:
         run: |
           cosign attest --yes \
               --predicate sbom.spdx.json \
-              --type spdx \
+              --type spdxjson \
               "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
 
       - name: Generate build-provenance attestation

@@ -32,7 +32,7 @@ The following checks were performed on each of these signatures:
 
 ```bash
 cosign verify-attestation \
-  --type spdx \
+  --type spdxjson \
   --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   ghcr.io/getbrink/{{ image_name }}:{{ version }}
