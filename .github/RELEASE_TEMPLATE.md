@@ -41,7 +41,11 @@ cosign verify-attestation \
 ## Verify the SLSA Build Level 2 provenance
 
 ```bash
-gh attestation verify --owner getbrink oci://ghcr.io/getbrink/{{ image_name }}:{{ version }}
+cosign verify-attestation \
+  --type slsaprovenance1 \
+  --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  ghcr.io/getbrink/{{ image_name }}:{{ version }}
 ```
 
 ## Third-party audit via Rekor

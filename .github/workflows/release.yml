@@ -228,12 +228,73 @@ jobs:
               --type spdxjson \
               "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
 
-      - name: Generate build-provenance attestation
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ghcr.io/getbrink/${{ inputs.image_name }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
+      - name: Generate SLSA v1.0 provenance predicate
+        # Build an in-toto SLSA v1.0 provenance predicate that cosign attest
+        # signs and pushes to the OCI registry + Rekor in the next step.
+        # We emit this manually (instead of via actions/attest-build-provenance@v2)
+        # because GitHub's attestation persistence API requires either a public
+        # repository or a paid plan for the getbrink org. The cosign-only path
+        # produces a signed, Rekor-logged, customer-verifiable SLSA v1.0
+        # statement with no GitHub-side dependency.
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+          GH_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          GH_REF: ${{ github.ref }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GH_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYEOF' > slsa-provenance.json
+          import json, os
+          predicate = {
+              "buildDefinition": {
+                  "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                  "externalParameters": {
+                      "workflow": {
+                          "ref": os.environ["GH_REF"],
+                          "repository": os.environ["GH_REPO_URL"],
+                          "path": os.environ["GH_WORKFLOW_REF"].split("@")[0].split("/", 1)[1] if "@" in os.environ["GH_WORKFLOW_REF"] else os.environ["GH_WORKFLOW_REF"],
+                      },
+                  },
+                  "internalParameters": {
+                      "github": {
+                          "event_name": os.environ["GH_EVENT_NAME"],
+                          "triggering_actor": os.environ["GH_TRIGGERING_ACTOR"],
+                      },
+                  },
+                  "resolvedDependencies": [
+                      {
+                          "uri": f"git+{os.environ['GH_REPO_URL']}@{os.environ['GH_REF']}",
+                          "digest": {"gitCommit": os.environ["GH_SHA"]},
+                      },
+                  ],
+              },
+              "runDetails": {
+                  "builder": {
+                      "id": f"https://github.com/getbrink/.github/.github/workflows/release.yml@refs/heads/main",
+                  },
+                  "metadata": {
+                      "invocationId": f"{os.environ['GH_REPO_URL']}/actions/runs/{os.environ['GH_RUN_ID']}/attempts/{os.environ['GH_RUN_ATTEMPT']}",
+                  },
+              },
+          }
+          json.dump(predicate, open("/dev/stdout", "w"), indent=2)
+          PYEOF
+
+      - name: Attach SLSA v1.0 provenance attestation
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign attest --yes \
+              --predicate slsa-provenance.json \
+              --type slsaprovenance1 \
+              "ghcr.io/getbrink/${IMAGE_NAME}@${IMAGE_DIGEST}"
 
       - name: Render release notes from org template
         env:

@@ -50,9 +50,12 @@ jobs:
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
             "${IMAGE}"
 
-      - name: GitHub attestation verify (SLSA Build Level 2 provenance)
+      - name: Cosign verify-attestation (SLSA v1.0 provenance)
         env:
           IMAGE: ${{ inputs.image }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh attestation verify --owner getbrink "oci://${IMAGE}"
+          cosign verify-attestation \
+            --type slsaprovenance1 \
+            --certificate-identity-regexp='^https://github.com/getbrink/[^/]+/\.github/workflows/release\.yml@refs/tags/v[0-9].*$' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            "${IMAGE}"
