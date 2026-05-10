@@ -9,12 +9,14 @@
 # Manual `workflow_dispatch` entry point. The cross-repo release-event
 # router lands at v0.2.
 #
-# Auth note: GHCR packages for private getbrink repos are themselves
-# private; cosign verify cannot fetch the .sig manifest without a
-# registry-scoped token. This workflow logs into ghcr.io with the
-# in-workflow GITHUB_TOKEN before invoking cosign — works for any
-# package whose source repo grants packages:read to the actor running
-# this workflow.
+# Auth note: this workflow lives in getbrink/.github but verifies
+# images whose packages are scoped to a different getbrink repo (e.g.
+# brink, brink-eval). The default GITHUB_TOKEN does not grant cross-repo
+# packages:read. We mint a short-lived GitHub App token via the existing
+# `brink-ci-cross-repo-read` App, scoped to the caller repo, and use it
+# for the GHCR docker login. The App must be installed on the caller
+# repo with at minimum `packages:read` for the package the cosign-verify
+# steps fetch.
 
 name: verify-release
 
@@ -43,12 +45,30 @@ jobs:
       packages: read
       id-token: write
     steps:
+      - name: Derive caller repo name (strip owner prefix)
+        id: derive
+        env:
+          CALLER_REPOSITORY: ${{ inputs.caller_repository }}
+        run: |
+          # Extract the bare repo name (e.g. "brink" from "getbrink/brink")
+          # for the App-token `repositories:` input.
+          echo "repo_name=${CALLER_REPOSITORY##*/}" >> "${GITHUB_OUTPUT}"
+
+      - name: Mint cross-repo GHCR token
+        id: ghcr-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BRINK_CI_CROSS_REPO_READ_APP_ID }}
+          private-key: ${{ secrets.BRINK_CI_CROSS_REPO_READ_PRIVATE_KEY }}
+          owner: getbrink
+          repositories: ${{ steps.derive.outputs.repo_name }}
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: x-access-token
+          password: ${{ steps.ghcr-token.outputs.token }}
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.2
