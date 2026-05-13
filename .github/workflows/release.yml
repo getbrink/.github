@@ -125,6 +125,16 @@ permissions:
   packages: write
   id-token: write       # cosign keyless OIDC + actions/attest-build-provenance
   attestations: write   # actions/attest-build-provenance
+  actions: write        # anchore/sbom-action -> actions/upload-artifact
+                        # internally calls /repos/{o}/{r}/actions/runs/{id}/artifacts
+                        # which is gated on the `actions` scope. Without it,
+                        # the SBOM step 403s intermittently — sometimes the
+                        # release-asset upload path completes first and masks
+                        # the failure, sometimes (rc6 push run 25781735792)
+                        # the artifact-upload sub-call surfaces and fails the
+                        # whole job. Per anchore/sbom-action README + the
+                        # canonical sigstore / kubernetes / vllm release
+                        # workflow patterns, `actions: write` is required.
 
 jobs:
   release:
