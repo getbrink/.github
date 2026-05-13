@@ -144,7 +144,7 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          docker-images: false
+          docker-images: true
           swap-storage: true
 
       - name: Move Docker data-root to /mnt (large-image builds only)
@@ -156,21 +156,36 @@ jobs:
         # frees ~25 GB of toolchains, the runner's own _diag log writes at
         # `/home/runner/actions-runner/cached/.../Worker_*-utc.log` hit
         # ENOSPC and the .NET worker crashes with an unhandled
-        # `System.IO.IOException: No space left on device` — observed on
-        # rc2 (2026-05-12 21:05Z) + rc5 (2026-05-13 03:07Z) + (almost
-        # certainly) the rc3 silent hang. Moving Docker's data-root to
-        # /mnt offloads the multi-stage build storage to the larger
-        # partition. Idempotent + Linux-only.
+        # `System.IO.IOException: No space left on device`. Moving
+        # Docker's data-root to /mnt offloads multi-stage build storage
+        # to the larger partition. Idempotent + Linux-only.
+        #
+        # Hardening notes:
+        #   * `mv` the whole directory (preserves dotfiles + perms) instead
+        #     of `mv .../*` (shell glob misses dotfiles).
+        #   * `docker-images: true` in the jlumbroso step above pre-purges
+        #     ~5-10 GB of preinstalled images from /var/lib/docker before
+        #     the move so `mv` is fast and there's no leftover content.
+        #   * The diagnostic block at the end (`docker info | grep ...`,
+        #     `df -h`) emits to step output so future failures expose
+        #     whether the move actually took effect — the previous
+        #     `_diag` ENOSPC crash erases the runner's own log uploads
+        #     including this step's output, so the diagnostic is best-
+        #     effort but at minimum lands when the move succeeds.
         if: ${{ inputs.maximize_build_space && runner.os == 'Linux' }}
         run: |
           sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
-          sudo mkdir -p /mnt/docker
-          if [ -d /var/lib/docker ] && [ "$(sudo ls -A /var/lib/docker 2>/dev/null)" ]; then
-            sudo mv /var/lib/docker/* /mnt/docker/ 2>/dev/null || true
+          sudo mkdir -p /mnt /etc/docker
+          if [ -d /var/lib/docker ]; then
+            sudo mv /var/lib/docker /mnt/docker
+          else
+            sudo mkdir -p /mnt/docker
           fi
-          sudo mkdir -p /etc/docker
           echo '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json > /dev/null
           sudo systemctl start docker
+          echo "--- post-move docker info:"
+          sudo docker info 2>&1 | grep -E "Docker Root Dir|Storage Driver" | sed 's/^/  /' || true
+          echo "--- post-move df -h /mnt /:"
           df -h /mnt / | sed 's/^/  /'
 
       - name: Checkout caller repo
