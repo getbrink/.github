@@ -147,6 +147,32 @@ jobs:
           docker-images: false
           swap-storage: true
 
+      - name: Move Docker data-root to /mnt (large-image builds only)
+        # ubuntu-latest GHA runners ship with /var/lib/docker on the small
+        # / partition (~14 GB) and a separate /mnt partition (~75 GB). The
+        # 22 GB eval-prometheus2 multi-stage build (BF16 14.5 GB + F16
+        # intermediate 14.5 GB + Q8_0 7.5 GB + builder venv 0.6 GB) fills
+        # / before push completes; even after `jlumbroso/free-disk-space`
+        # frees ~25 GB of toolchains, the runner's own _diag log writes at
+        # `/home/runner/actions-runner/cached/.../Worker_*-utc.log` hit
+        # ENOSPC and the .NET worker crashes with an unhandled
+        # `System.IO.IOException: No space left on device` — observed on
+        # rc2 (2026-05-12 21:05Z) + rc5 (2026-05-13 03:07Z) + (almost
+        # certainly) the rc3 silent hang. Moving Docker's data-root to
+        # /mnt offloads the multi-stage build storage to the larger
+        # partition. Idempotent + Linux-only.
+        if: ${{ inputs.maximize_build_space && runner.os == 'Linux' }}
+        run: |
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo mkdir -p /mnt/docker
+          if [ -d /var/lib/docker ] && [ "$(sudo ls -A /var/lib/docker 2>/dev/null)" ]; then
+            sudo mv /var/lib/docker/* /mnt/docker/ 2>/dev/null || true
+          fi
+          sudo mkdir -p /etc/docker
+          echo '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json > /dev/null
+          sudo systemctl start docker
+          df -h /mnt / | sed 's/^/  /'
+
       - name: Checkout caller repo
         uses: actions/checkout@v4
         with:
