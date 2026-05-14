@@ -65,6 +65,16 @@ on:
         description: "Image tag (typically github.ref_name; e.g. v0.1.0 or v0.0.0-rc1)."
         required: true
         type: string
+      build_version:
+        description: "Dockerfile BUILD_VERSION build-arg — the binary self-identifies via -ldflags. Default empty leaves the Dockerfile default ('dev'); pass the release tag for a production build."
+        required: false
+        type: string
+        default: ""
+      git_sha:
+        description: "Dockerfile GIT_SHA build-arg. Default empty leaves the Dockerfile default ('unknown'); pass github.sha for a production build."
+        required: false
+        type: string
+        default: ""
       context:
         description: "Build context path relative to $GITHUB_WORKSPACE (default '.'; pass '..' for monorepo-parent context)."
         required: false
@@ -248,6 +258,8 @@ jobs:
           cache-to: type=gha,scope=${{ inputs.image_name }},mode=max
           build-args: |
             ${{ inputs.grafana_signing_required && format('GRAFANA_ACCESS_POLICY_TOKEN={0}', secrets.GRAFANA_ACCESS_POLICY_TOKEN) || '' }}
+            ${{ inputs.build_version != '' && format('BUILD_VERSION={0}', inputs.build_version) || '' }}
+            ${{ inputs.git_sha != '' && format('GIT_SHA={0}', inputs.git_sha) || '' }}
 
       - name: Trivy scan (blocks on ${{ inputs.trivy_severity }})
         uses: aquasecurity/trivy-action@v0.36.0
