@@ -115,6 +115,31 @@ on:
         required: false
         type: boolean
         default: false
+      codeartifact_role_arn:
+        description: "IAM role ARN for OIDC assume to mint a CodeArtifact authorization token. When set, the job assumes this role and exports UV_INDEX_BRINK_USERNAME/PASSWORD for downstream uv steps. Empty default leaves existing callers unchanged."
+        required: false
+        type: string
+        default: ""
+      codeartifact_domain:
+        description: "CodeArtifact domain name (used only when codeartifact_role_arn is set)."
+        required: false
+        type: string
+        default: "brink"
+      codeartifact_domain_owner:
+        description: "CodeArtifact domain owner AWS account ID (used only when codeartifact_role_arn is set)."
+        required: false
+        type: string
+        default: "793826056514"
+      codeartifact_repository:
+        description: "CodeArtifact repository name within the domain (used only when codeartifact_role_arn is set)."
+        required: false
+        type: string
+        default: "wheels"
+      enable_codeartifact_build_secret:
+        description: "Wire the minted CodeArtifact token through to docker build as a BuildKit secret named ca_token. Requires codeartifact_role_arn to be set."
+        required: false
+        type: boolean
+        default: false
     secrets:
       BRINK_CI_CROSS_REPO_READ_APP_ID:
         description: "GitHub App ID for brink-ci-cross-repo-read App (required only when sibling_repo is set)."
@@ -150,6 +175,10 @@ jobs:
   release:
     name: Build, push, scan, sign, attest, publish
     runs-on: ubuntu-latest
+    # Fork-PR OIDC refusal: a PR opened from a fork must not mint a CodeArtifact
+    # token (or any privileged credential). Tag-push and first-party PR paths
+    # are unaffected.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     strategy:
       fail-fast: true
     outputs:
@@ -232,6 +261,43 @@ jobs:
           token: ${{ steps.sibling-token.outputs.token }}
           fetch-depth: 1
 
+      - name: Configure AWS credentials (CodeArtifact OIDC)
+        if: ${{ inputs.codeartifact_role_arn != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.codeartifact_role_arn }}
+          aws-region: us-east-1
+
+      - name: Mint CodeArtifact authorization token
+        if: ${{ inputs.codeartifact_role_arn != '' }}
+        env:
+          CA_DOMAIN: ${{ inputs.codeartifact_domain }}
+          CA_DOMAIN_OWNER: ${{ inputs.codeartifact_domain_owner }}
+        run: |
+          TOKEN=$(aws codeartifact get-authorization-token \
+            --domain "$CA_DOMAIN" \
+            --domain-owner "$CA_DOMAIN_OWNER" \
+            --duration-seconds 3600 \
+            --query authorizationToken \
+            --output text)
+          echo "::add-mask::$TOKEN"
+          echo "UV_INDEX_BRINK_USERNAME=aws" >> "$GITHUB_ENV"
+          echo "UV_INDEX_BRINK_PASSWORD=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: CodeArtifact simple-index smoke probe
+        # HEAD probe against the simple-index URL mitigates uv#11899 where the
+        # first index hit in a fresh runner intermittently races the CodeArtifact
+        # token-cache warmup and returns 401. The probe forces the warmup before
+        # any uv step runs.
+        if: ${{ inputs.codeartifact_role_arn != '' }}
+        env:
+          CA_DOMAIN: ${{ inputs.codeartifact_domain }}
+          CA_DOMAIN_OWNER: ${{ inputs.codeartifact_domain_owner }}
+          CA_REPO: ${{ inputs.codeartifact_repository }}
+        run: |
+          URL="https://${CA_DOMAIN}-${CA_DOMAIN_OWNER}.d.codeartifact.us-east-1.amazonaws.com/pypi/${CA_REPO}/simple/brink-contract/"
+          curl -fsS -I -u "aws:$UV_INDEX_BRINK_PASSWORD" "$URL" > /dev/null
+
       - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v3
 
@@ -260,6 +326,8 @@ jobs:
             ${{ inputs.grafana_signing_required && format('GRAFANA_ACCESS_POLICY_TOKEN={0}', secrets.GRAFANA_ACCESS_POLICY_TOKEN) || '' }}
             ${{ inputs.build_version != '' && format('BUILD_VERSION={0}', inputs.build_version) || '' }}
             ${{ inputs.git_sha != '' && format('GIT_SHA={0}', inputs.git_sha) || '' }}
+          secrets: |
+            ${{ inputs.enable_codeartifact_build_secret && format('ca_token={0}', env.UV_INDEX_BRINK_PASSWORD) || '' }}
 
       - name: Trivy scan (blocks on ${{ inputs.trivy_severity }})
         uses: aquasecurity/trivy-action@v0.36.0
