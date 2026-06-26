@@ -81,7 +81,7 @@ on:
         type: string
         default: "."
       platforms:
-        description: "Comma-separated docker buildx platforms (default linux/amd64; arm64 lands at v0.2)."
+        description: "Comma-separated docker buildx platforms, e.g. linux/amd64,linux/arm64 for multi-arch (default linux/amd64)."
         required: false
         type: string
         default: "linux/amd64"
@@ -297,6 +297,14 @@ jobs:
         run: |
           URL="https://${CA_DOMAIN}-${CA_DOMAIN_OWNER}.d.codeartifact.us-east-1.amazonaws.com/pypi/${CA_REPO}/simple/brink-contract/"
           curl -fsS -I -u "aws:$UV_INDEX_BRINK_PASSWORD" "$URL" > /dev/null
+
+      - name: Set up QEMU (arm64 binfmt for multi-arch builds)
+        # Registers arm64 binfmt handlers so buildx can execute RUN steps in
+        # linux/arm64 stages on the amd64 runner (eval's `uv sync`, the CP
+        # runtime stage's `apk add`). Go stages cross-compile without it, but
+        # any RUN in a non-native target stage needs emulation. No-op for
+        # single-platform (linux/amd64) callers.
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v3
