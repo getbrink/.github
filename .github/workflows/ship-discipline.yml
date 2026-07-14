@@ -4,44 +4,59 @@
 # cannot merge to main unless paired with an open or merged brink-docs PR
 # linked from the engineering PR body.
 #
-# Mechanism is labels-driven, not file-path-driven. The PR author asserts
-# "this change touches a customer surface" by applying the
-# `customer-surface-impact` label; codeowners override with `bug-fix`,
-# `refactor`, or `internal-only`.
+# The customer-surface trigger is PATH-driven, with a label as a manual
+# override. A PR trips the gate when it changes a file matching
+# `customer_surface_paths` (minus `customer_surface_exclude_paths`), or when
+# the author applies `customer-surface-impact` by hand. Codeowners override
+# with `bug-fix`, `refactor`, or `internal-only`.
 #
 # Called per-repo from `<repo>/.github/workflows/ship-discipline.yml` on
 # pull_request events. The caller pins this workflow's ref (typically
-# `@main`) and triggers on `[opened, edited, labeled, unlabeled,
-# synchronize]` so the gate re-evaluates whenever the labels, body, or
-# diff change.
+# `@main`), passes its own path list, and triggers on `[opened, edited,
+# labeled, unlabeled, synchronize]` so the gate re-evaluates whenever the
+# labels, body, or diff change.
 #
 # Gate logic (in order):
 #
-#   1. If the PR carries any exception label (`bug-fix`, `refactor`,
-#      `internal-only`) the gate PASSES. Exception labels are codeowner
-#      overrides; branch-protection enforces that codeowners gate label
-#      changes.
+#   1. Any exception label (`bug-fix`, `refactor`, `internal-only`) PASSES.
+#      Branch protection enforces that codeowners gate label changes.
 #
-#   2. If the PR does NOT carry `customer-surface-impact` the gate
-#      PASSES. The author has not asserted a ship-discipline-triggering
-#      change.
+#   2. No customer-surface trigger — neither a changed file matching
+#      `customer_surface_paths` nor the `customer-surface-impact` label —
+#      PASSES.
 #
-#   3. If the PR carries `customer-surface-impact` the gate scans the PR
-#      body for a `getbrink/brink-docs/pull/<n>` link. The linked docs PR
-#      is fetched via the REST API. The gate PASSES when the docs PR is
-#      merged, or open and not draft. The gate FAILS when no link is
-#      present, the docs PR is closed without merge, draft, or otherwise
-#      unreachable.
+#   3. Triggered, and the PR body has no `getbrink/brink-docs/pull/<n>`
+#      link: FAILS. Requiring the link needs no cross-repo read, so this is
+#      the gate's load-bearing check and it works in every caller repo.
 #
-# Failure mode: the job fails with an explicit message naming what to do
-# next (apply an exception label with codeowner sign-off, or open and link
-# a brink-docs PR).
+#   4. Triggered, link present: the gate tries to read the linked docs PR
+#      and PASSES on merged, or open-and-not-draft. It FAILS only when every
+#      linked PR was read successfully and none is pairable (closed without
+#      merge, or draft).
+#
+#   5. Triggered, link present, but a linked PR could not be read: WARNS and
+#      PASSES. See the token note below — a correct PR must never go red for
+#      want of a token.
+#
+# Cross-repo token note (verified 2026-07-14, not aspirational):
+#   brink-docs is PRIVATE (`gh repo view getbrink/brink-docs --json isPrivate`
+#   -> true), so the caller's default GITHUB_TOKEN cannot read its PRs — it is
+#   scoped to the calling repo. Reading a docs PR needs a token from the
+#   `brink-ci-cross-repo-read` App. Two things block that today:
+#     - `brink-python` and `brink-litellm-plugin` hold zero Actions secrets, so
+#       they cannot mint an App token at all.
+#     - The App's permissions are contents/metadata/packages read only. It has
+#       no `pull_requests` permission, so even `brink` and `brink-eval` — which
+#       do hold the App secrets — cannot read a brink-docs PR's state.
+#   Until an org admin grants the App `pull_requests: read` and adds the App
+#   secrets to the two repos that lack them, step 4 cannot run and step 5 warns
+#   instead. Step 3 is unaffected, which is why the gate still has teeth.
+#   If brink-docs is ever made public, the unauthenticated read starts working
+#   and step 4 begins verifying with no further change here.
 #
 # Security note: the PR body is read inside the actions/github-script JS
-# sandbox via context.payload — never interpolated into a shell `run:`
-# block, so the standard GHA template-injection vector does not apply.
-# Cross-repo docs PR lookup uses the default GITHUB_TOKEN; brink-docs is
-# public, so anonymous reads suffice even on PRs from forks.
+# sandbox via context.payload — never interpolated into a shell `run:` block,
+# so the standard GHA template-injection vector does not apply.
 
 name: ship-discipline
 
@@ -53,16 +68,33 @@ on:
         required: false
         type: string
         default: "getbrink/brink-docs"
+      customer_surface_paths:
+        description: "Newline-separated globs. A PR changing any matching file trips the gate without needing a label. Empty (the default) leaves the gate label-only, i.e. a no-op unless a human opts in."
+        required: false
+        type: string
+        default: ""
+      customer_surface_exclude_paths:
+        description: "Newline-separated globs subtracted from customer_surface_paths. Use for test files living under a customer-surface root."
+        required: false
+        type: string
+        default: ""
       trigger_label:
-        description: "Label the PR author applies to assert a customer-surface-impact change. The gate is a no-op unless this label is present."
+        description: "Label the author applies to assert a customer-surface change by hand. Additive to customer_surface_paths, not a precondition."
         required: false
         type: string
         default: "customer-surface-impact"
       exception_labels:
-        description: "Comma-separated codeowner-override labels. A PR carrying any of these PASSES regardless of the trigger label."
+        description: "Comma-separated codeowner-override labels. A PR carrying any of these PASSES regardless of trigger."
         required: false
         type: string
         default: "bug-fix,refactor,internal-only"
+    secrets:
+      docs_read_app_id:
+        description: "App ID for the cross-repo docs-read GitHub App. Absent means the gate cannot verify a linked docs PR's state and warns instead."
+        required: false
+      docs_read_private_key:
+        description: "Private key for the cross-repo docs-read GitHub App."
+        required: false
 
 permissions:
   pull-requests: read
@@ -70,21 +102,65 @@ permissions:
 
 jobs:
   ship-discipline:
-    name: Paired brink-docs PR required when customer-surface-impact
+    name: Paired brink-docs PR required on customer-surface changes
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
+      # Secrets are not usable in a step-level `if:`, so resolve availability
+      # into an output first.
+      - name: Resolve docs-read token availability
+        id: token
+        env:
+          APP_ID: ${{ secrets.docs_read_app_id }}
+          APP_KEY: ${{ secrets.docs_read_private_key }}
+          DOCS_REPO: ${{ inputs.docs_repo }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "docs_owner=${DOCS_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "docs_name=${DOCS_REPO##*/}" >> "$GITHUB_OUTPUT"
+
+      # continue-on-error: a token we cannot mint must degrade to a warning in
+      # the gate, not kill the job before the gate has run.
+      - name: Mint cross-repo docs-read token
+        id: app-token
+        if: steps.token.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.docs_read_app_id }}
+          private-key: ${{ secrets.docs_read_private_key }}
+          owner: ${{ steps.token.outputs.docs_owner }}
+          repositories: ${{ steps.token.outputs.docs_name }}
+
       - name: Evaluate ship-discipline gate
         uses: actions/github-script@v7
         env:
           DOCS_REPO: ${{ inputs.docs_repo }}
+          SURFACE_PATHS: ${{ inputs.customer_surface_paths }}
+          SURFACE_EXCLUDE_PATHS: ${{ inputs.customer_surface_exclude_paths }}
           TRIGGER_LABEL: ${{ inputs.trigger_label }}
           EXCEPTION_LABELS: ${{ inputs.exception_labels }}
+          DOCS_TOKEN: ${{ steps.app-token.outputs.token }}
+          TOKEN_AVAILABLE: ${{ steps.token.outputs.available }}
         with:
           script: |
             const docsRepo = process.env.DOCS_REPO;
             const triggerLabel = process.env.TRIGGER_LABEL;
-            const exceptionLabels = process.env.EXCEPTION_LABELS
+            const docsToken = process.env.DOCS_TOKEN || '';
+            const tokenAvailable = process.env.TOKEN_AVAILABLE === 'true';
+
+            const lines = (raw) => (raw || '')
+              .split('\n')
+              .map(s => s.trim())
+              .filter(Boolean);
+
+            const surfaceGlobs = lines(process.env.SURFACE_PATHS);
+            const excludeGlobs = lines(process.env.SURFACE_EXCLUDE_PATHS);
+            const exceptionLabels = (process.env.EXCEPTION_LABELS || '')
               .split(',')
               .map(s => s.trim())
               .filter(Boolean);
@@ -101,7 +177,34 @@ jobs:
               return;
             }
 
-            const { data: labelData } = await github.rest.issues.listLabelsOnIssue({
+            // '**' spans separators, '*' and '?' stop at one. Anchored, so a
+            // glob must describe the whole repo-relative path.
+            const globToRegExp = (glob) => {
+              let re = '';
+              for (let i = 0; i < glob.length; i++) {
+                const c = glob[i];
+                if (c === '*' && glob[i + 1] === '*') {
+                  if (glob[i + 2] === '/') { re += '(?:.*/)?'; i += 2; }
+                  else { re += '.*'; i += 1; }
+                } else if (c === '*') {
+                  re += '[^/]*';
+                } else if (c === '?') {
+                  re += '[^/]';
+                } else if ('\\^$.|+()[]{}'.includes(c)) {
+                  re += '\\' + c;
+                } else {
+                  re += c;
+                }
+              }
+              return new RegExp(`^${re}$`);
+            };
+
+            const surfaceRes = surfaceGlobs.map(globToRegExp);
+            const excludeRes = excludeGlobs.map(globToRegExp);
+            const isSurface = (file) =>
+              surfaceRes.some(re => re.test(file)) && !excludeRes.some(re => re.test(file));
+
+            const labelData = await github.paginate(github.rest.issues.listLabelsOnIssue, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number,
@@ -115,48 +218,84 @@ jobs:
               return;
             }
 
-            if (!labels.includes(triggerLabel)) {
-              core.info(`PASS: PR does not carry '${triggerLabel}'; ship-discipline is a no-op.`);
+            // listFiles reads the CALLING repo with the default GITHUB_TOKEN,
+            // so this needs no cross-repo grant.
+            let matchedFiles = [];
+            if (surfaceRes.length > 0) {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              matchedFiles = files.map(f => f.filename).filter(isSurface);
+              core.info(`Changed files: ${files.length}; customer-surface matches: ${matchedFiles.length}`);
+            } else {
+              core.warning(
+                `No 'customer_surface_paths' configured for this repo, so the gate is label-only ` +
+                `and passes unless someone applies '${triggerLabel}' by hand. Pass a path list from ` +
+                `the caller workflow to make it enforce.`
+              );
+            }
+
+            const labelAsserted = labels.includes(triggerLabel);
+            if (matchedFiles.length === 0 && !labelAsserted) {
+              core.info(`PASS: no customer-surface path changed and no '${triggerLabel}' label; nothing to pair.`);
               return;
             }
 
-            const body = pr.body || '';
-            const linkPattern = new RegExp(
-              `${docsOwner}/${docsName}/pull/(\\d+)`,
-              'g'
-            );
-            const matches = [...body.matchAll(linkPattern)].map(m => Number(m[1]));
+            const why = matchedFiles.length > 0
+              ? `changed customer-surface file(s): ${matchedFiles.slice(0, 10).join(', ')}` +
+                (matchedFiles.length > 10 ? ` (+${matchedFiles.length - 10} more)` : '')
+              : `carries the '${triggerLabel}' label`;
+            core.info(`Ship-discipline triggered: PR ${why}.`);
+
+            const escaped = `${docsOwner}/${docsName}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const linkPattern = new RegExp(`${escaped}/pull/(\\d+)`, 'g');
+            const matches = [...(pr.body || '').matchAll(linkPattern)].map(m => Number(m[1]));
             if (matches.length === 0) {
               core.setFailed(
-                `FAIL: PR carries '${triggerLabel}' but body has no link to a ${docsRepo} PR. ` +
+                `FAIL: PR ${why}, but the body has no link to a ${docsRepo} PR. ` +
                 `Either link a paired ${docsRepo} PR in the body, or have a codeowner apply ` +
                 `one of: ${exceptionLabels.join(', ')}.`
               );
               return;
             }
 
-            const seen = new Set();
+            // Deliberately fetch, not github.request: `github` is an Octokit
+            // bound to the caller's GITHUB_TOKEN, and Octokit's auth hook
+            // unconditionally overwrites headers.authorization, so a per-call
+            // token override on it is silently ignored. Raw fetch is the only
+            // way to present the docs-read App token. No token means an
+            // unauthenticated read, which succeeds if docs_repo is ever public.
+            const readDocsPr = async (num) => {
+              const headers = {
+                accept: 'application/vnd.github+json',
+                'user-agent': 'brink-ship-discipline',
+              };
+              if (docsToken) headers.authorization = `Bearer ${docsToken}`;
+              const res = await fetch(
+                `https://api.github.com/repos/${docsOwner}/${docsName}/pulls/${num}`,
+                { headers },
+              );
+              if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+              return res.json();
+            };
+
             const pairable = [];
             const unpairable = [];
-            for (const num of matches) {
-              if (seen.has(num)) continue;
-              seen.add(num);
+            const unverified = [];
+            for (const num of [...new Set(matches)]) {
               try {
-                const { data: docsPr } = await github.rest.pulls.get({
-                  owner: docsOwner,
-                  repo: docsName,
-                  pull_number: num,
-                });
+                const docsPr = await readDocsPr(num);
                 const summary = `${docsRepo}#${num} state=${docsPr.state} draft=${docsPr.draft} merged=${docsPr.merged}`;
-                if (docsPr.merged) {
-                  pairable.push(summary);
-                } else if (docsPr.state === 'open' && !docsPr.draft) {
+                if (docsPr.merged || (docsPr.state === 'open' && !docsPr.draft)) {
                   pairable.push(summary);
                 } else {
                   unpairable.push(summary);
                 }
               } catch (err) {
-                unpairable.push(`${docsRepo}#${num} unreachable (${err.status || 'error'})`);
+                unverified.push(`${docsRepo}#${num} unreadable (${err.status || 'error'})`);
               }
             }
 
@@ -165,8 +304,29 @@ jobs:
               return;
             }
 
+            // A missing cross-repo token must never redden a PR that did link
+            // its docs pair. Warn loudly, name the fix, and pass.
+            if (unverified.length > 0) {
+              const cause = tokenAvailable
+                ? `A docs-read App token was minted, but the read still failed. The ` +
+                  `'brink-ci-cross-repo-read' App has permissions contents/metadata/packages read ` +
+                  `and NO 'pull_requests' permission, which this read requires.`
+                : `This repo holds no BRINK_CI_CROSS_REPO_READ_APP_ID / ` +
+                  `BRINK_CI_CROSS_REPO_READ_PRIVATE_KEY secrets, so no cross-repo token could be ` +
+                  `minted, and ${docsRepo} is private.`;
+              core.warning(
+                `UNVERIFIED: PR ${why} and links ${docsRepo} PR(s), but their state could not be ` +
+                `read: ${unverified.join('; ')}. ${cause} Passing rather than failing a PR that did ` +
+                `link its docs pair. To close this gap, a getbrink org admin must grant the ` +
+                `'brink-ci-cross-repo-read' App 'pull_requests: read', and add both App secrets to ` +
+                `the repos missing them (brink-python, brink-litellm-plugin).`
+              );
+              core.info('PASS (unverified): docs PR link present; state unreadable.');
+              return;
+            }
+
             core.setFailed(
-              `FAIL: PR carries '${triggerLabel}' but no linked ${docsRepo} PR is open-and-ready or merged. ` +
+              `FAIL: PR ${why}, but no linked ${docsRepo} PR is open-and-ready or merged. ` +
               `Seen: ${unpairable.join('; ')}. Either link a different ${docsRepo} PR, ` +
               `move the linked docs PR out of draft, or have a codeowner apply one of: ` +
               `${exceptionLabels.join(', ')}.`
