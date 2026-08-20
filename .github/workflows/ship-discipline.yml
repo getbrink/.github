@@ -42,15 +42,16 @@
 #   brink-docs is PRIVATE (`gh repo view getbrink/brink-docs --json isPrivate`
 #   -> true), so the caller's default GITHUB_TOKEN cannot read its PRs — it is
 #   scoped to the calling repo. Reading a docs PR needs a token from the
-#   `brink-ci-cross-repo-read` App. Two things block that today:
-#     - `brink-python` and `brink-litellm-plugin` hold zero Actions secrets, so
-#       they cannot mint an App token at all.
-#     - The App's permissions are contents/metadata/packages read only. It has
-#       no `pull_requests` permission, so even `brink` and `brink-eval` — which
-#       do hold the App secrets — cannot read a brink-docs PR's state.
-#   Until an org admin grants the App `pull_requests: read` and adds the App
-#   secrets to the two repos that lack them, step 4 cannot run and step 5 warns
-#   instead. Step 3 is unaffected, which is why the gate still has teeth.
+#   `brink-ci-cross-repo-read` App. One thing blocks that today:
+#     - The App's permissions are contents/metadata/packages read only
+#       (measured 2026-08-20 against `GET /app`). It has no `pull_requests`
+#       permission, so no caller can read a brink-docs PR's state, whichever
+#       secrets it holds.
+#   All four consumer repos now hold the App secrets — brink-python and
+#   brink-litellm-plugin were provisioned 2026-08-20 — so the remaining gap is
+#   the permission alone. Until an org admin grants the App `pull_requests:
+#   read`, step 4 cannot run and step 5 warns instead. Step 3 is unaffected,
+#   which is why the gate still has teeth.
 #   If brink-docs is ever made public, the unauthenticated read starts working
 #   and step 4 begins verifying with no further change here.
 #

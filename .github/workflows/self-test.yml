@@ -1,0 +1,30 @@
+name: self-test
+
+# This repo ships reusable workflows and the scripts they call. Nothing else
+# runs them, so without this job a gate here reports the same green whether it
+# passed or was never invoked.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  provers:
+    name: Reusable-workflow provers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        run: |
+          bash <(curl -sSf --compressed \
+            https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "${PWD}" >> "$GITHUB_PATH"
+      - run: actionlint .github/workflows/contract-pin-agreement.yml
+      - run: bash scripts/assert-authority-derived.sh
+      - run: bash tests/test_contract_pin_agreement.sh
+      - run: bash tests/test_release_workflow.sh

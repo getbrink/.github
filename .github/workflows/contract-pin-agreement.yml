@@ -1,0 +1,56 @@
+name: contract-pin-agreement
+
+# Refuses a consumer whose brink-contract pin is not exactly the version
+# getbrink/brink ships. Both sides are read from a checkout: a version passed in
+# as an input is a value the caller controls, and this job grades the caller.
+
+on:
+  workflow_call:
+    inputs:
+      manifest_path:
+        description: "Path in the calling repo to the manifest declaring the brink-contract dependency."
+        required: false
+        type: string
+        default: "pyproject.toml"
+    secrets:
+      contract_read_app_id:
+        description: "App ID for the cross-repo read of getbrink/brink, which is private."
+        required: true
+      contract_read_private_key:
+        description: "Private key for the same App."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  contract-pin-agreement:
+    name: brink-contract pin equals the version brink ships
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caller
+          persist-credentials: false
+      - name: Mint cross-repo App token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.contract_read_app_id }}
+          private-key: ${{ secrets.contract_read_private_key }}
+          owner: getbrink
+          repositories: brink
+      - name: Checkout brink, the authority
+        uses: actions/checkout@v4
+        with:
+          repository: getbrink/brink
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+          path: brink
+      - name: Compare the declared pin against the version brink ships
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          AUTHORITATIVE=$(bash brink/scripts/contract-version.sh)
+          echo "brink ships brink-contract ${AUTHORITATIVE}"
+          bash brink/scripts/check-contract-pin.sh "caller/${MANIFEST_PATH}" "${AUTHORITATIVE}"
