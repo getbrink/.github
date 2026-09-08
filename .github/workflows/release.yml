@@ -321,7 +321,10 @@ jobs:
           image: ghcr.io/getbrink/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
-          upload-artifact: true
+          # The SBOM is attached to the image digest as a cosign attestation
+          # below; a workflow-artifact copy adds nothing and fails the whole
+          # job once the Actions artifact storage quota is full.
+          upload-artifact: false
           upload-release-assets: true
 
       - name: Attach SBOM attestation
