@@ -498,6 +498,11 @@ jobs:
       - name: Publish release notes
         uses: softprops/action-gh-release@v2
         with:
+          # On a tag push the action infers the tag from the ref; on a
+          # workflow_dispatch (a re-run of an existing tag) the ref is main and
+          # the step failed with "GitHub Releases requires a tag" after the image
+          # was already published. The version input IS the tag on both paths.
+          tag_name: ${{ inputs.version }}
           body_path: release_notes.md
           files: sbom.spdx.json
           append_body: true
