@@ -28,3 +28,9 @@ Each repository has its own setup instructions in its `README.md`. The four prim
 ## Proto changes
 
 PRs touching `proto/**` files require explicit approval from the contract steward in addition to normal code review. `buf lint` and `buf breaking` must pass.
+
+## Licence
+
+By contributing you agree that your contribution is licensed under the licence in that
+repository's `LICENSE`. Sign off every commit (`git commit -s`), certifying the Developer
+Certificate of Origin.
