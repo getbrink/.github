@@ -32,5 +32,5 @@ PRs touching `proto/**` files require explicit approval from the contract stewar
 ## Licence
 
 By contributing you agree that your contribution is licensed under the licence in that
-repository's `LICENSE`. Every commit carries a Developer Certificate of Origin sign-off
-(`git commit -s`).
+repository's `LICENSE`. Sign off every commit (`git commit -s`), certifying the Developer
+Certificate of Origin.
