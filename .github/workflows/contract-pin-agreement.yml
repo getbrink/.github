@@ -1,8 +1,9 @@
 name: contract-pin-agreement
 
-# Refuses a consumer whose brink-contract pin is not exactly the version
-# getbrink/brink ships. Both sides are read from a checkout: a version passed in
-# as an input is a value the caller controls, and this job grades the caller.
+# Refuses a consumer whose brink-contract dependency is not the floor of the major
+# getbrink/brink ships, sourced from the sibling checkout. Both sides are read
+# from a checkout: a version passed in as an input is a value the caller
+# controls, and this job grades the caller.
 
 on:
   workflow_call:
@@ -25,7 +26,7 @@ permissions:
 
 jobs:
   contract-pin-agreement:
-    name: brink-contract pin equals the version brink ships
+    name: brink-contract floor matches the major brink ships
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
