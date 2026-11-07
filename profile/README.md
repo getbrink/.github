@@ -6,6 +6,9 @@ Reliability control loop for AI agent stacks.
 
 - [`brink`](https://github.com/getbrink/brink) — Go control plane + protobuf contract
 - [`brink-python`](https://github.com/getbrink/brink-python) — Python data plane library
+- [`brink-litellm-plugin`](https://github.com/getbrink/brink-litellm-plugin) — A litellm plugin for brink
+- [`brink-examples`](https://github.com/getbrink/brink-examples) — Watch Brink stop an AI agent from failing
+- [`brink-eval`](https://github.com/getbrink/brink-eval) — A parallel quality-evaluator service
 - [`brink-docs`](https://github.com/getbrink/brink-docs) — Documentation
 
 Customer-hosted via `docker-compose`. [Getting started →](https://github.com/getbrink/brink-docs)
